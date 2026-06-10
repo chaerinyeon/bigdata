@@ -40,6 +40,7 @@
 |------|------|
 | 데이터 출처 | Kaggle: `yanmaksi/big-startup-secsees-fail-dataset-from-crunchbase` |
 | 파일 | `big_startup_secsees_dataset.csv` |
+| 데이터 규모 | 66,103 행 (Row) |
 | 처리 엔진 | **Apache Spark (PySpark)** — 분산 전처리·집계 |
 | 주요 필드 | `funding_total_usd`, `country_code`, `category_list`, `status` |
 | 파생 변수 | `is_closed`, `is_survived`, `is_success`, `funding_log`(로그 변환) |
@@ -88,13 +89,13 @@
 | 폐업률 최고 (위험) | 폐업률 | | 폐업률 최저 (안정) | 폐업률 |
 |--------------------|:---:|---|--------------------|:---:|
 | Public Relations | **23.0%** | | Consumer Electronics | 0.0% |
-| Curated Web | 18.8% | | Real Estate | 2.4% |
-| Search | 15.0% | | Education | 3.0% |
-| Social Media | 14.0% | | Nonprofits | 3.3% |
-| Advertising | 13.6% | | Fashion | 3.4% |
+| Curated Web | 18.8% | | Biotechnology\|Health Care | 0.0% |
+| Search | 15.0% | | Information Technology | 1.6% |
+| Social Media | 14.0% | | Real Estate | 2.4% |
+| Advertising | 13.6% | | EdTech\|Education | 2.9% |
 
 > 홍보(PR)·큐레이션 웹·검색 등 경쟁이 치열한 분야가 폐업률이 높고, 소비자 가전·부동산·교육이 안정적입니다.
-> ⚠️ 폐업률 최저 목록에는 `Biotechnology|Hea...`(n=110, 0.0%) 같은 **멀티태그 소수 표본**도 섞여 있어, 이는 아래 §8 한계에서 다루는 아티팩트와 동일한 현상입니다.
+> ⚠️ 폐업률 최저 목록의 `Biotechnology|Health Care`(n=110, 0.0%)는 **멀티태그 소수 표본**으로, 아래 §8 한계에서 다루는 아티팩트와 동일한 현상입니다.
 
 ### 5-3. 투자금과 성과의 관계 (상관분석 + 10분위 추이)
 
@@ -167,10 +168,11 @@ df_clean = (df.withColumn("funding_total_usd",
 
 ### 몬테카를로 포트폴리오 시뮬레이션
 ```python
-for _ in range(num_portfolios):           # 10만 회
+np.random.seed(42)                          # 재현성 고정
+for _ in range(num_portfolios):             # 10만 회
     weights = np.random.random(len(categories)); weights /= weights.sum()
     expected_success = np.sum(weights * success_rates) * 100
-    funded = np.sum((total_budget_m * weights) / avg_costs_m)
+    funded = np.sum((total_budget_m * weights) / median_costs_m)   # 중앙값(롱테일 보정) 사용
     risk = (100 - expected_success) + max(0, (20 - funded) * 2)
 ```
 
@@ -189,7 +191,7 @@ for _ in range(num_portfolios):           # 10만 회
 - **결론:** Spark 기반 집계로 국가·산업별 위험 지형을 파악하고, 이를 몬테카를로 시뮬레이션에 연결해 위험 대비 기대 성공률이 높은 자본 배분안을 정량적으로 제시했습니다.
 - **제언:** 투자자는 단일 고성공률 산업에 집중하기보다, 효율 경계 부근의 분산 배분으로 투자 기업 수를 일정 수준 이상 확보하는 전략이 유리합니다.
 - **한계 (검토 필요):**
-  - **Biotech 89% 성공률은 통계 아티팩트입니다.** `category_list`가 파이프(`|`)로 묶인 **멀티태그**라, `groupBy("category_list")`는 `Biotechnology|Health Care|...` 같은 **태그 조합 하나하나를 별도 그룹**으로 취급합니다. 그 결과 특정 조합이 **소수 표본(약 110개)** 으로 쪼개지면서 성공률이 **89%로 과대평가**되었습니다. 반면 `Biotechnology` 단독(약 3,432개)의 성공률은 **16.1%** 로, 89%는 데이터의 실제 특성이 아니라 **그룹화 방식이 만든 가짜 수치**입니다. 본 버전은 이 값을 몬테카를로 입력으로 그대로 사용했으므로 "Biotech 집중" 결론이 과장될 수 있으며, 향후 **주 카테고리(첫 태그) 정규화 + 최소 표본 임계치(N≥200)** 보정이 필요합니다.
+  - **Biotech 89% 성공률은 멀티태그로 인한 통계 아티팩트입니다.** `category_list`는 파이프(`|`)로 여러 태그가 묶인 **멀티태그** 필드라, 같은 "Biotechnology"라도 결합된 태그에 따라 데이터상 **서로 다른 값**으로 존재합니다 — 예: `Biotechnology`(단독, n=3,432) · `Biotechnology|Health Care`(n=110) · `Biotechnology|Health Diagnostics`(n=219). `groupBy("category_list")`는 이 **조합 하나하나를 별도 그룹**으로 집계하므로, 특정 소수 조합(`Biotechnology|Health Care`, n=110)이 **89%로 과대평가**된 것입니다. 반면 `Biotechnology` 단독(n=3,432)의 성공률은 **16.1%** 로, 89%는 데이터의 실제 특성이 아니라 **그룹화 방식이 만든 수치**입니다. (참고: 분석·차트에 같은 Biotechnology가 여러 줄로 보이는 것은 이름이 잘린 것이 아니라, 위처럼 **원래 별개의 멀티태그 값**이기 때문입니다.) 본 버전은 이 값을 몬테카를로 입력으로 그대로 사용했으므로 "Biotech 집중" 결론이 과장될 수 있으며, 향후 **주 카테고리(첫 태그) 정규화 + 최소 표본 임계치(N≥200)** 보정이 필요합니다.
   - 밸류에이션·지분 희석 데이터 부재, 단일 시점 스냅샷, 엑시트 정의의 단순화(acquired/ipo).
   - 리스크 점수는 분산(공분산) 기반이 아닌 휴리스틱 정의로, 향후 Markowitz식 위험 모델로 확장 여지가 있습니다.
   - NoSQL·실시간 처리는 본 버전에서 제외 — 향후 MongoDB 적재 및 Streaming 갱신으로 확장 가능.
